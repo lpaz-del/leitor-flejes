@@ -1,45 +1,16 @@
 'use strict';
 (() => {
-  const byId = id => document.getElementById(id);
-  const params = new URLSearchParams(location.search);
-  const origin = params.get('origin') || '';
-  const nonce = params.get('nonce') || '';
-  let reader = null;
-  let active = false;
-  const message = (text, error = false) => { byId('msg').textContent = text; byId('msg').className = error ? 'error' : ''; };
-  function stop() {
-    active = false;
-    if (reader) { reader.reset(); reader = null; }
-    const stream = byId('video').srcObject;
-    if (stream) stream.getTracks().forEach(track => track.stop());
-    byId('video').srcObject = null;
-  }
-  async function start() {
-    stop(); byId('start').disabled = true; byId('retry').hidden = true; byId('result').textContent = '';
-    try {
-      if (!window.ZXing) throw new Error('Não foi possível carregar o leitor. Verifique a internet e tente novamente.');
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('A câmera não está disponível neste navegador.');
-      const hints = new Map(); hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.CODE_128]);
-      hints.set(ZXing.DecodeHintType.TRY_HARDER, true);
-      reader = new ZXing.BrowserMultiFormatReader(hints, 250); active = true;
-      byId('video').hidden = false; message('Aponte para o código de barras da etiqueta.');
-      await reader.decodeFromVideoDevice(null, byId('video'), result => {
-        if (!active || !result) return;
-        const code = String(result.getText() || '').trim();
-        if (!ScannerBridge.validCode(code)) return;
-        stop(); byId('video').hidden = true; byId('result').textContent = 'Código lido: ' + code;
-        if (window.opener && ScannerBridge.validOrigin(origin) && /^[a-f0-9]{32}$/i.test(nonce)) {
-          window.opener.postMessage({type:'granado-fleje-code', nonce, code}, origin);
-          message('Código enviado. Volte ao inventário para conferir.');
-        } else message('Código lido. Abra o leitor pelo aplicativo de inventário para enviá-lo automaticamente.');
-        byId('retry').hidden = false;
-      });
-    } catch (err) {
-      stop(); byId('video').hidden = true;
-      message(err && err.name === 'NotAllowedError' ? 'Permita o uso da câmera nas configurações do navegador e tente novamente.' : (err.message || 'Não foi possível iniciar a câmera.'), true);
-      byId('retry').hidden = false;
-    } finally { byId('start').disabled = false; }
-  }
-  byId('start').onclick = start; byId('retry').onclick = start;
-  window.addEventListener('pagehide', stop);
+ const e=id=>document.getElementById(id), p=new URLSearchParams(location.search), origin=p.get('origin')||'', nonce=p.get('nonce')||'';
+ const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+ let stream=null, active=false, timer=null, detector=null, zreader=null;
+ function message(text,error=false){e('msg').textContent=text;e('msg').className=error?'error':''}
+ function stop(){active=false;clearTimeout(timer);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;e('video').srcObject=null}
+ function draw(angle){let v=e('video'),scale=Math.min(1,1280/Math.max(v.videoWidth,v.videoHeight)),w=Math.round(v.videoWidth*scale),h=Math.round(v.videoHeight*scale);if(angle===90){canvas.width=h;canvas.height=w;ctx.setTransform(0,1,-1,0,h,0)}else{canvas.width=w;canvas.height=h;ctx.setTransform(1,0,0,1,0,0)}ctx.drawImage(v,0,0,w,h);ctx.setTransform(1,0,0,1,0,0);return canvas}
+ async function nativeRead(angle){const codes=await detector.detect(draw(angle));return codes.length?String(codes[0].rawValue||''):''}
+ function zxingRead(angle){const image=draw(angle);const source=new ZXing.HTMLCanvasElementLuminanceSource(image);const bitmap=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));const result=zreader.decodeWithState(bitmap);return String(result.getText()||'')}
+ async function scan(){if(!active)return;try{if(e('video').readyState>=2&&e('video').videoWidth){const code=await ScanEngine.decodeFrame({native:detector?nativeRead:null,fallback:zreader?zxingRead:null});if(!active)return;if(ScannerBridge.validCode(code)){stop();e('preview').hidden=true;e('result').textContent='Código lido: '+code;if(window.opener&&ScannerBridge.validOrigin(origin)&&/^[a-f0-9]{32}$/i.test(nonce)){window.opener.postMessage({type:'granado-fleje-code',nonce,code},origin);message('Código enviado. Voltando para a contagem...');e('back').hidden=false;setTimeout(()=>window.close(),800)}else{message('Código lido. Abra o leitor pelo aplicativo para enviar automaticamente.');e('start').textContent='Ler novamente';e('start').hidden=false}return}}}catch(err){}if(active)timer=setTimeout(scan,220)}
+ async function start(){stop();e('start').hidden=true;e('back').hidden=true;e('result').textContent='';message('Abrindo a câmera...');try{if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('A câmera não está disponível neste navegador.');detector=null;if(window.BarcodeDetector){try{const supported=await BarcodeDetector.getSupportedFormats();if(supported.includes('code_128'))detector=new BarcodeDetector({formats:['code_128']})}catch(err){}}
+ zreader=null;if(window.ZXing){const hints=new Map();hints.set(ZXing.DecodeHintType.TRY_HARDER,true);const names=['CODE_128','CODE_39','CODE_93','ITF','EAN_13','EAN_8','UPC_A','UPC_E'];const formats=names.map(n=>ZXing.BarcodeFormat[n]).filter(x=>x!==undefined);hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,formats);zreader=new ZXing.MultiFormatReader();zreader.setHints(hints)}if(!detector&&!zreader)throw Error('O leitor não carregou. Verifique a internet e tente novamente.');
+ stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});e('video').srcObject=stream;e('preview').hidden=false;await e('video').play();active=true;message('Aproxime a etiqueta até o código ocupar a área marcada.');scan();}catch(err){stop();e('preview').hidden=true;message(err&&err.name==='NotAllowedError'?'Permita o acesso à câmera e toque no botão para tentar novamente.':(err.message||'Não foi possível abrir a câmera.'),true);e('start').hidden=false}}
+ e('start').onclick=start;e('back').onclick=()=>window.close();window.addEventListener('pagehide',stop);start();
 })();
