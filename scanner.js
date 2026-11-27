@@ -2,13 +2,25 @@
 (() => {
  const e=id=>document.getElementById(id), p=new URLSearchParams(location.search), origin=p.get('origin')||'', nonce=p.get('nonce')||'';
  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
- let stream=null, active=false, timer=null, detector=null, zreader=null;
+ let stream=null, active=false, timer=null, detector=null, zreader=null, scanPhase=0;
  function message(text,error=false){e('msg').textContent=text;e('msg').className=error?'error':''}
  function stop(){active=false;clearTimeout(timer);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;e('video').srcObject=null}
  function draw(angle){let v=e('video'),scale=Math.min(1,1280/Math.max(v.videoWidth,v.videoHeight)),w=Math.round(v.videoWidth*scale),h=Math.round(v.videoHeight*scale);if(angle===90){canvas.width=h;canvas.height=w;ctx.setTransform(0,1,-1,0,h,0)}else{canvas.width=w;canvas.height=h;ctx.setTransform(1,0,0,1,0,0)}ctx.drawImage(v,0,0,w,h);ctx.setTransform(1,0,0,1,0,0);return canvas}
  async function nativeRead(angle){const codes=await detector.detect(draw(angle));return codes.length?String(codes[0].rawValue||''):''}
- function zxingRead(angle){const image=draw(angle);const source=new ZXing.HTMLCanvasElementLuminanceSource(image);const bitmap=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));const result=zreader.decodeWithState(bitmap);return String(result.getText()||'')}
- async function scan(){if(!active)return;try{if(e('video').readyState>=2&&e('video').videoWidth){const code=await ScanEngine.decodeFrame({native:detector?nativeRead:null,fallback:zreader?zxingRead:null});if(!active)return;if(ScannerBridge.validCode(code)){stop();e('preview').hidden=true;e('result').textContent='Código lido: '+code;if(window.opener&&ScannerBridge.validOrigin(origin)&&/^[a-f0-9]{32}$/i.test(nonce)){window.opener.postMessage({type:'granado-fleje-code',nonce,code},origin);message('Código enviado. Voltando para a contagem...');e('back').hidden=false;setTimeout(()=>window.close(),800)}else{message('Código lido. Abra o leitor pelo aplicativo para enviar automaticamente.');e('start').textContent='Ler novamente';e('start').hidden=false}return}}}catch(err){}if(active)timer=setTimeout(scan,220)}
+ function drawBlue(angle){
+  const v=e('video'), scale=Math.min(1,1800/Math.max(v.videoWidth,v.videoHeight));
+  const w=Math.round(v.videoWidth*scale),h=Math.round(v.videoHeight*scale),rad=angle*Math.PI/180,c=Math.cos(rad),s=Math.sin(rad);
+  canvas.width=Math.ceil(Math.abs(w*c)+Math.abs(h*s));canvas.height=Math.ceil(Math.abs(w*s)+Math.abs(h*c));
+  ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='white';ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.setTransform(c,s,-s,c,canvas.width/2-(c*w-s*h)/2,canvas.height/2-(s*w+c*h)/2);
+  ctx.drawImage(v,0,0,w,h);ctx.setTransform(1,0,0,1,0,0);
+  const pixels=ctx.getImageData(0,0,canvas.width,canvas.height);
+  for(let i=0;i<pixels.data.length;i+=4){const blue=pixels.data[i+2];pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=blue}
+  ctx.putImageData(pixels,0,0);return canvas;
+ }
+ function decodeImage(image){const source=new ZXing.HTMLCanvasElementLuminanceSource(image);const bitmap=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(source));return String(zreader.decodeWithState(bitmap).getText()||'')}
+ function zxingRead(angle){try{return decodeImage(draw(angle))}catch(err){}return decodeImage(drawBlue(angle+[-5,5,0][scanPhase%3]))}
+ async function scan(){if(!active)return;try{if(e('video').readyState>=2&&e('video').videoWidth){const code=await ScanEngine.decodeFrame({native:detector?nativeRead:null,fallback:zreader?zxingRead:null});if(!active)return;if(ScannerBridge.validCode(code)){stop();e('preview').hidden=true;e('result').textContent='Código lido: '+code;if(window.opener&&ScannerBridge.validOrigin(origin)&&/^[a-f0-9]{32}$/i.test(nonce)){window.opener.postMessage({type:'granado-fleje-code',nonce,code},origin);message('Código enviado. Voltando para a contagem...');e('back').hidden=false;setTimeout(()=>window.close(),800)}else{message('Código lido. Abra o leitor pelo aplicativo para enviar automaticamente.');e('start').textContent='Ler novamente';e('start').hidden=false}return}}}catch(err){}if(active){scanPhase++;timer=setTimeout(scan,220)}}
  async function start(){stop();e('start').hidden=true;e('back').hidden=true;e('result').textContent='';message('Abrindo a câmera...');try{if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw Error('A câmera não está disponível neste navegador.');detector=null;if(window.BarcodeDetector){try{const supported=await BarcodeDetector.getSupportedFormats();if(supported.includes('code_128'))detector=new BarcodeDetector({formats:['code_128']})}catch(err){}}
  zreader=null;if(window.ZXing){const hints=new Map();hints.set(ZXing.DecodeHintType.TRY_HARDER,true);const names=['CODE_128','CODE_39','CODE_93','ITF','EAN_13','EAN_8','UPC_A','UPC_E'];const formats=names.map(n=>ZXing.BarcodeFormat[n]).filter(x=>x!==undefined);hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,formats);zreader=new ZXing.MultiFormatReader();zreader.setHints(hints)}if(!detector&&!zreader)throw Error('O leitor não carregou. Verifique a internet e tente novamente.');
  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});e('video').srcObject=stream;e('preview').hidden=false;await e('video').play();active=true;message('Aproxime a etiqueta até o código ocupar a área marcada.');scan();}catch(err){stop();e('preview').hidden=true;message(err&&err.name==='NotAllowedError'?'Permita o acesso à câmera e toque no botão para tentar novamente.':(err.message||'Não foi possível abrir a câmera.'),true);e('start').hidden=false}}
